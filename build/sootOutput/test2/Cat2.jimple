@@ -1,0 +1,28 @@
+class Cat2 extends Animal2
+{
+
+    void <init>()
+    {
+        Cat2 r0;
+
+        r0 := @this: Cat2;
+
+        specialinvoke r0.<Animal2: void <init>()>();
+
+        return;
+    }
+
+    public void speak()
+    {
+        java.io.PrintStream $r0;
+        Cat2 r1;
+
+        r1 := @this: Cat2;
+
+        $r0 = <java.lang.System: java.io.PrintStream out>;
+
+        virtualinvoke $r0.<java.io.PrintStream: void println(java.lang.String)>("Meow!");
+
+        return;
+    }
+}

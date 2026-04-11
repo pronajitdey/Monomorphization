@@ -1,0 +1,70 @@
+public class Test2 extends java.lang.Object
+{
+
+    public void <init>()
+    {
+        Test2 r0;
+
+        r0 := @this: Test2;
+
+        specialinvoke r0.<java.lang.Object: void <init>()>();
+
+        return;
+    }
+
+    static void makeNoise(Animal2)
+    {
+        Animal2 r0;
+
+        r0 := @parameter0: Animal2;
+
+        virtualinvoke r0.<Animal2: void speak()>();
+
+        return;
+    }
+
+    public static void main(java.lang.String[])
+    {
+        Animal2 $r1;
+        Cat2 $r3;
+        Dog2 $r2;
+        int $i0, i1;
+        java.lang.String[] r0;
+
+        r0 := @parameter0: java.lang.String[];
+
+        i1 = 0;
+
+     label1:
+        if i1 >= 2 goto label4;
+
+        $i0 = i1 % 2;
+
+        if $i0 != 0 goto label2;
+
+        $r2 = new Dog2;
+
+        $r1 = $r2;
+
+        specialinvoke $r2.<Dog2: void <init>()>();
+
+        goto label3;
+
+     label2:
+        $r3 = new Cat2;
+
+        $r1 = $r3;
+
+        specialinvoke $r3.<Cat2: void <init>()>();
+
+     label3:
+        staticinvoke <Test2: void makeNoise(Animal2)>($r1);
+
+        i1 = i1 + 1;
+
+        goto label1;
+
+     label4:
+        return;
+    }
+}
