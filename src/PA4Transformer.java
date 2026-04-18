@@ -31,6 +31,9 @@ public class PA4Transformer extends SceneTransformer {
             new MonomorphizationTransformer(chain);
         transformer.internalTransform(phaseName, options);
 
+        InlineTransformer inliner = new InlineTransformer();
+        inliner.internalTransform(phaseName, options);
+ 
         // Per-layer breakdown for the report
         chain.printStats();
     }
