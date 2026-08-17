@@ -75,6 +75,7 @@ public class InterPTAResolver implements CallTargetResolver {
             );
 
             if (target == null || !VTAResolver.isSafeTarget(target)) return null;
+            PTADebugPrinter.printResolution(stmt, caller, target, "IntraPTA");
 
             if (agreedTarget == null) {
                 agreedTarget = target;

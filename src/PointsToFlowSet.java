@@ -47,11 +47,13 @@ import java.util.*;
 public class PointsToFlowSet {
 
     // ── Local map: local variable → set of concrete types ────────────────────
-    private final Map<Local, Set<Type>> localMap;
-
+    // package-private so PTADebugPrinter can iterate them for display
+    final Map<Local, Set<Type>> localMap;
+ 
     // ── Field map: (receiver local, field) → set of concrete types ───────────
     // Key is a FieldKey record: (Local, SootField) pair.
-    private final Map<FieldKey, Set<Type>> fieldMap;
+    // package-private for the same reason
+    final Map<FieldKey, Set<Type>> fieldMap;
 
     // ─────────────────────────────────────────────────────────────────────────
     // FieldKey: identifies a specific field on a specific receiver local
@@ -113,6 +115,15 @@ public class PointsToFlowSet {
         Set<Type> s = new HashSet<>();
         s.add(t);
         localMap.put(x, s);
+    }
+
+    /** x = {T1, T2, ...}  →  localMap[x] = that full set (strong update). */
+    public void assignLocalTypes(Local x, Set<Type> types) {
+        if (types == null || types.isEmpty()) {
+            localMap.remove(x);
+            return;
+        }
+        localMap.put(x, new HashSet<>(types));
     }
 
     /** x = y  →  localMap[x] = copy of localMap[y]  (strong update) */

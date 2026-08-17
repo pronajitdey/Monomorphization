@@ -25,21 +25,81 @@ import java.util.Set;
  *   - entryFacts is empty (new PointsToFlowSet()).
  *   - Identity stmts populate types from declared signatures only.
  */
+
+/**
+ * Field-Sensitive Intraprocedural Points-To Analysis.
+ *
+ * Accepts a MethodSeed that was built by the interprocedural engine
+ * by mapping CALLER argument types → CALLEE parameter locals by position.
+ *
+ * How the seed integrates:
+ * ─────────────────────────────────────────────────────────────────────────
+ * Every Jimple body starts with identity statements that bind formals:
+ *
+ *   $p0 := @this: Engine           // this-local
+ *   $p1 := @parameter0: Animal     // first formal
+ *   $p2 := @parameter1: int        // second formal
+ *
+ * When the seed contains:  {$p1 → {Dog}, $p2 → {int}}
+ * the flowThrough for the @parameter0 identity statement uses Dog
+ * (the caller-derived type) instead of the declared type Animal.
+ *
+ * This is what gives context sensitivity:
+ *   call site s1: helper(new Dog())  → seed $p1 → {Dog}
+ *   call site s2: helper(new Cat())  → seed $p1 → {Cat}
+ * Each (method, callSite) pair produces a different analysis result.
+ *
+ * CORRECTNESS NOTE:
+ * The seed keys are Local objects from THIS callee's body — resolved
+ * by the interprocedural engine by scanning @parameter IdentityStmts.
+ * They are never borrowed from the caller's body.
+ * ─────────────────────────────────────────────────────────────────────────
+ */
 public class IntraProceduralPTA
         extends ForwardFlowAnalysis<Unit, PointsToFlowSet> {
 
-    private final PointsToFlowSet seedEntry;
-
-    /** Standalone constructor — no interprocedural seed. */
+    private final MethodSeed seed;
+ 
+    /** Standalone (no interprocedural context). */
     public IntraProceduralPTA(Body body) {
-        this(body, new PointsToFlowSet());
+        this(body, MethodSeed.EMPTY);
+    }
+ 
+    /**
+     * Seeded constructor — called by InterProceduralPTA.
+     * seed contains callee-local → types mappings already resolved
+     * by the interprocedural engine using argument positions.
+     */
+    public IntraProceduralPTA(Body body, MethodSeed seed) {
+        super(new ExceptionalUnitGraph(body));
+        this.seed = seed;
+        doAnalysis();
     }
 
-    /** Seeded constructor — called by InterProceduralPTA with caller-derived entry facts. */
-    public IntraProceduralPTA(Body body, PointsToFlowSet seedEntry) {
+    /**
+     * Core constructor. contextLabel is only used for debug output.
+     * seed contains callee-local → types mappings already resolved
+     * by SeedBuilder using argument positions — never borrowed from caller.
+     */
+    public IntraProceduralPTA(Body body, MethodSeed seed, String contextLabel) {
         super(new ExceptionalUnitGraph(body));
-        this.seedEntry = seedEntry;
+        this.seed = seed;
         doAnalysis();
+ 
+        // Print per-statement localMap + fieldMap after analysis completes
+        if (PTADebugPrinter.DEBUG_LEVEL >= 2) {
+            PTADebugPrinter.printIntraState(this, body, contextLabel, seed);
+        } else if (PTADebugPrinter.DEBUG_LEVEL == 1) {
+            // Compute exit facts inline for the summary line
+            PointsToFlowSet exit = new PointsToFlowSet();
+            for (Unit u : body.getUnits()) {
+                if (u instanceof soot.jimple.ReturnStmt
+                 || u instanceof soot.jimple.ReturnVoidStmt) {
+                    exit.mergeWith(getFlowBefore(u));
+                }
+            }
+            PTADebugPrinter.printIntraSummary(body, contextLabel, seed, exit);
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -54,23 +114,22 @@ public class IntraProceduralPTA
         if (!(unit instanceof Stmt)) return;
         Stmt stmt = (Stmt) unit;
 
-        // ── Identity statements ───────────────────────────────────────────────
+        // ── Identity statements (@this, @parameter) ───────────────────────────
         if (stmt instanceof IdentityStmt) {
             IdentityStmt id = (IdentityStmt) stmt;
             if (!(id.getLeftOp() instanceof Local)) return;
             Local lhs = (Local) id.getLeftOp();
             Value rhs = id.getRightOp();
-
+ 
             if (rhs instanceof ThisRef || rhs instanceof ParameterRef) {
-                // If the interprocedural layer seeded a concrete type for this
-                // local, prefer it over the declared type.
-                // The seed is checked via: does seedEntry have type info for lhs?
-                Set<Type> seeded = seedEntry.getLocalTypes(lhs);
-                if (!seeded.isEmpty()) {
-                    // Use the seeded (caller-derived) type
-                    for (Type t : seeded) out.assignLocal(lhs, t);
+                // Does the interprocedural seed have caller-derived types
+                // for this exact local (which exists in THIS callee's body)?
+                Set<Type> seededTypes = seed.getTypes(lhs);
+                if (!seededTypes.isEmpty()) {
+                    // Use caller-derived types as one unioned strong update.
+                    out.assignLocalTypes(lhs, seededTypes);
                 } else {
-                    // Fall back to the declared type
+                    // No seed info — fall back to the declared type from the IR
                     out.assignIdentity(lhs, rhs.getType());
                 }
             }
@@ -79,43 +138,48 @@ public class IntraProceduralPTA
 
         // ── Assignment statements ─────────────────────────────────────────────
         if (!(stmt instanceof AssignStmt)) return;
-        AssignStmt as = (AssignStmt) stmt;
-        Value lhsVal = as.getLeftOp();
-        Value rhsVal = as.getRightOp();
-
+        AssignStmt as  = (AssignStmt) stmt;
+        Value lhsVal   = as.getLeftOp();
+        Value rhsVal   = as.getRightOp();
+ 
         // ── Field write: a.f = b ──────────────────────────────────────────────
         if (lhsVal instanceof InstanceFieldRef) {
             InstanceFieldRef lhsRef = (InstanceFieldRef) lhsVal;
             if (!(lhsRef.getBase() instanceof Local)) return;
-            Local base  = (Local) lhsRef.getBase();
+            Local base    = (Local) lhsRef.getBase();
             SootField fld = lhsRef.getField();
-
             if (rhsVal instanceof Local)
                 out.writeField(base, fld, (Local) rhsVal);
             else if (rhsVal instanceof NewExpr)
                 out.writeFieldDirect(base, fld, ((NewExpr) rhsVal).getType());
             return;
         }
-
-        // ── LHS must be a Local for remaining cases ───────────────────────────
+ 
         if (!(lhsVal instanceof Local)) return;
         Local lhs = (Local) lhsVal;
 
+        // x = new T()
         if (rhsVal instanceof NewExpr)
             out.assignLocal(lhs, ((NewExpr) rhsVal).getType());
+        // x = y
         else if (rhsVal instanceof Local)
             out.copyLocal(lhs, (Local) rhsVal);
+        // x = (T) y
         else if (rhsVal instanceof CastExpr) {
             Value op = ((CastExpr) rhsVal).getOp();
             if (op instanceof Local) out.copyLocal(lhs, (Local) op);
-        } else if (rhsVal instanceof InstanceFieldRef) {
+        }
+        // x = a.f  (field read)
+        else if (rhsVal instanceof InstanceFieldRef) {
             InstanceFieldRef rhsRef = (InstanceFieldRef) rhsVal;
             if (rhsRef.getBase() instanceof Local)
                 out.readField(lhs, (Local) rhsRef.getBase(), rhsRef.getField());
-        } else if (rhsVal instanceof NewArrayExpr
-                || rhsVal instanceof NewMultiArrayExpr)
+        }
+        // x = new T[] / new T[][]
+        else if (rhsVal instanceof NewArrayExpr
+              || rhsVal instanceof NewMultiArrayExpr)
             out.assignLocal(lhs, rhsVal.getType());
-        // call results, static fields, array reads → conservative (leave as-is)
+        // call result, static field, array read → conservative (no update)
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -140,10 +204,7 @@ public class IntraProceduralPTA
 
     @Override
     protected PointsToFlowSet entryInitialFlow() {
-        // The entry node starts with the seed facts from the caller.
-        // A deep copy is essential — multiple analyses share the same seedEntry
-        // object but must not alias each other's flow sets.
-        return new PointsToFlowSet(seedEntry);
+        return new PointsToFlowSet();
     }
 
     // ─────────────────────────────────────────────────────────────────────────
